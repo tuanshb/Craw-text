@@ -97,6 +97,9 @@ code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;word-bre
     <label for="filter">Xóa dòng chứa từ khóa (mỗi dòng một từ khóa, dùng để bỏ quảng cáo)</label>
     <textarea id="filter" rows="3"></textarea>
     <label class="chk"><input type="checkbox" id="rev"> Đảo ngược thứ tự danh sách chương</label>
+    <label class="chk"><input type="checkbox" id="skipJunk" checked> Bỏ phần rác nằm trước chương 1 (giới thiệu, quảng cáo, link thừa…)</label>
+    <label for="startKw">Hoặc chỉ định mốc: bắt đầu từ mục có tên chứa</label>
+    <input id="startKw" placeholder="Ví dụ: 第一章 (để trống = tự nhận diện chương 1)">
     <label class="chk"><input type="checkbox" id="multi"> Gộp chương bị chia nhiều trang (下一页 / 下一頁 / Trang sau)</label>
   </details>
 
@@ -113,10 +116,12 @@ code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;word-bre
   </div>
   <label for="txtEnc">Mã hóa file TXT</label>
   <select id="txtEnc">
+    <option value="auto">Tự động (khuyên dùng)</option>
     <option value="utf8">UTF-8 (phổ biến nhất)</option>
     <option value="bom">UTF-8 có BOM (cho Notepad / máy đọc sách cũ)</option>
     <option value="utf16">UTF-16 LE có BOM (cho phần mềm đọc cũ hay lỗi chữ Hán)</option>
   </select>
+  <small>Chữ Hán trong file luôn đúng. Tùy chọn này chỉ ảnh hưởng cách phần mềm mở file nhận ra bảng mã. Nếu mở file bị lỗi chữ, thử đổi sang tùy chọn khác rồi tải lại.</small>
 
   <details>
     <summary>Vì sao cần proxy? Cách tạo proxy riêng</summary>
@@ -133,6 +138,7 @@ return new Response(x.body,{status:x.status,headers:h})}}</code></pre>
 <section id="t2" hidden>
   <label class="drop" id="drop" for="file">Chọn hoặc kéo thả file .epub vào đây</label>
   <input id="file" type="file" accept=".epub,application/epub+zip" hidden>
+  <label class="chk"><input type="checkbox" id="skip2" checked> Bỏ các phần rác trước chương 1 (bìa, giới thiệu, quảng cáo…) — chọn trước khi mở file</label>
   <pre id="log2" aria-live="polite"></pre>
   <div class="btns"><button class="b" id="dlTxt2" disabled>Tải TXT</button></div>
 </section>
@@ -235,6 +241,16 @@ async function getChapter(url){
   return bad.length?lines.filter(l=>!bad.some(k=>l.includes(k))):lines;
 }
 
+/* ---------- Bỏ rác trước chương 1 ---------- */
+const CH1=/第\s*(?:0*1|一|壹)\s*[章回节節卷集话話]|(?:chương|chapter)\s*0*1(?!\d)|序章|序言|楔子|引子|前言|prologue|mở đầu|lời nói đầu/i;
+function junkStart(titles){
+  const kw=$('#startKw').value.trim();
+  if(!kw&&!$('#skipJunk').checked) return 0;
+  const i=titles.findIndex(t=>kw?t.includes(kw):CH1.test(t));
+  if(i<0){log('⚠ Không tìm thấy chương 1 để làm mốc, giữ nguyên toàn bộ.');return 0}
+  return i;
+}
+
 /* ---------- Chạy tải truyện ---------- */
 function busy(b){ $('#go').disabled=b; $('#stop').disabled=!b; $('#bar').hidden=!b&&$('#bar').value===0 }
 $('#stop').onclick=()=>{abort=true};
@@ -248,6 +264,11 @@ $('#go').onclick=async()=>{
     const doc=await getDoc(url);
     let links=getLinks(doc,$('#selLink').value.trim(),url);
     if($('#rev').checked) links.reverse();
+    const s0=junkStart(links.map(l=>l.title));
+    if(s0>0){
+      log(`Đã bỏ ${s0} mục nằm trước chương 1: `+links.slice(0,3).map(l=>l.title).join(' | ')+(s0>3?' …':''));
+      links=links.slice(s0);
+    }
     const from=+$('#from').value||1, to=+$('#to').value||links.length;
     links=links.slice(from-1,to);
     if(!links.length) throw new Error('Không tìm thấy chương nào. Mở “Tùy chọn nâng cao” và nhập CSS selector cho link chương.');
@@ -271,7 +292,7 @@ $('#go').onclick=async()=>{
     $('#dlEpub').disabled=$('#dlTxt').disabled=false;
     log('✅ Xong. Bấm nút tải bên dưới.');
   }catch(e){
-    log('❌ '+e.message+(e.message==='Failed to fetch'?' (thường do CORS/proxy — thử proxy khác)':''));
+    log('❌ '+e.message+(/Failed to fetch|Load failed|NetworkError/i.test(e.message)?' → Không kết nối được proxy. Có thể: Worker từ chối (sai ALLOW), Worker bị lỗi, hoặc trang nguồn chặn proxy. Mở địa chỉ Worker trực tiếp trong trình duyệt để xem lỗi thật.':''));
   }finally{ busy(false) }
 };
 
@@ -283,6 +304,7 @@ function save(blob,name){
   setTimeout(()=>URL.revokeObjectURL(a.href),8000);
 }
 function txtBlob(text,mode){
+  if(mode==='auto') mode=/Windows/i.test(navigator.userAgent)?'bom':'utf8';
   if(mode==='utf16'){
     const u=new Uint16Array(text.length+1); u[0]=0xFEFF;
     for(let i=0;i<text.length;i++) u[i+1]=text.charCodeAt(i);
@@ -332,7 +354,7 @@ async function epubToTxt(file){
   const title=opf.getElementsByTagName('dc:title')[0]?.textContent.trim()||file.name.replace(/\.epub$/i,'');
   const author=opf.getElementsByTagName('dc:creator')[0]?.textContent.trim()||'';
   const refs=[...opf.querySelectorAll('spine > itemref')];
-  let out=title+'\n'+(author?author+'\n':''), n=0;
+  const secs=[];
   for(const r of refs){
     const it=man[r.getAttribute('idref')]; if(!it) continue;
     if((it.getAttribute('properties')||'').includes('nav')) continue;
@@ -343,10 +365,18 @@ async function epubToTxt(file){
       const h=d.querySelector('h1,h2,h3')?.textContent.trim()||'';
       if(h&&lines[0]===h) lines.shift();
       if(!lines.length) continue;
-      out+='\n\n'+(h?h+'\n\n':'')+lines.join('\n'); n++;
+      secs.push({h,lines});
     }catch(e){ log2('⚠ Bỏ qua '+path+': '+e.message) }
   }
-  log2(`✅ Đã chuyển ${n} phần của “${title}”.`);
+  let from=0;
+  if($('#skip2').checked){
+    const i=secs.findIndex(x=>CH1.test(x.h||x.lines[0]));
+    if(i>0){from=i;log2(`Đã bỏ ${i} phần nằm trước chương 1.`)}
+    else if(i<0) log2('⚠ Không tìm thấy chương 1 để làm mốc, giữ nguyên toàn bộ.');
+  }
+  let out=title+'\n'+(author?author+'\n':'');
+  secs.slice(from).forEach(x=>out+='\n\n'+(x.h?x.h+'\n\n':'')+x.lines.join('\n'));
+  log2(`✅ Đã chuyển ${secs.length-from} phần của “${title}”.`);
   return {text:out+'\n',title};
 }
 async function handleFile(f){
@@ -360,7 +390,7 @@ const dz=$('#drop');
 ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('on')}));
 ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('on')}));
 dz.addEventListener('drop',e=>handleFile(e.dataTransfer.files[0]));
-$('#dlTxt2').onclick=()=>epubTxt&&save(txtBlob(epubTxt,'utf8'),safe(epubName)+'.txt');
+$('#dlTxt2').onclick=()=>epubTxt&&save(txtBlob(epubTxt,'auto'),safe(epubName)+'.txt');
 </script>
 </body>
 </html>
